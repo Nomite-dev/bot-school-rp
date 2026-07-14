@@ -1,96 +1,91 @@
 import discord
+from discord import app_commands
 from discord.ext import commands
 import random
 import os
 from threading import Thread
 from flask import Flask
 
-# --- MINI SERVEUR WEB POUR GARDER LE BOT ACTIF SUR RENDER ---
+# --- SERVEUR WEB (Pour garder le bot en ligne sur Render) ---
 app = Flask('')
-
 @app.route('/')
-def home():
-    return "Le bot est en vie !"
-
-def run():
-    app.run(host='0.0.0.0', port=10000)
-
+def home(): return "Le bot est en vie !"
+def run(): app.run(host='0.0.0.0', port=10000)
 def keep_alive():
     t = Thread(target=run)
     t.start()
-# ------------------------------------------------------------
 
+# --- CONFIGURATION DU BOT ---
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True 
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+class MyBot(commands.Bot):
+    def __init__(self):
+        super().__init__(command_prefix="!", intents=intents)
 
-# Base de données temporaire
+    async def setup_hook(self):
+        # Cette ligne synchronise les commandes SLASH avec Discord
+        await self.tree.sync()
+        print("Commandes Slash synchronisées !")
+
+bot = MyBot()
+
+# Bases de données temporaires
 economie = {}  
 colles = {}    
 eleves_rp = {} 
 
 @bot.event
 async def on_ready():
-    print(f"Le surveillant général {bot.user.name} est dans la place !")
+    print(f"Le surveillant {bot.user.name} est prêt !")
+    keep_alive()
 
-@bot.command()
-async def inscription(ctx, prenom: str, nom: str, classe: str):
+# --- COMMANDES SLASH ---
+
+@bot.tree.command(name="ping", description="Vérifie si le bot fonctionne")
+async def ping(interaction: discord.Interaction):
+    await interaction.response.send_message("Pong ! 🏓 Le bot est bien en ligne.")
+
+@bot.tree.command(name="inscription", description="S'inscrire au lycée RP")
+async def inscription(interaction: discord.Interaction, prenom: str, nom: str, classe: str):
     nom_complet = f"{prenom.capitalize()} {nom.upper()}"
     classe_propre = classe.capitalize()
-    eleves_rp[ctx.author.id] = {"nom": nom_complet, "classe": classe_propre}
-    economie[ctx.author.id] = 10  
+    eleves_rp[interaction.user.id] = {"nom": nom_complet, "classe": classe_propre}
+    economie[interaction.user.id] = 10
+    
     nouveau_pseudo = f"[{classe_propre}] {nom_complet}"
     try:
-        await ctx.author.edit(nick=nouveau_pseudo)
-        await ctx.send(f"🏫 **Inscription validée !** Bienvenue au lycée, {ctx.author.mention}. Tu as été renommé(e) `{nouveau_pseudo}` et tu reçois 10€ d'argent de poche !")
-    except discord.Forbidden:
-        await ctx.send(f"🏫 **Inscription validée !** Bienvenue {nom_complet}. *(Permissions insuffisantes pour changer ton pseudo)*")
+        await interaction.user.edit(nick=nouveau_pseudo)
+        await interaction.response.send_message(f"🏫 Inscription validée ! Bienvenue {nouveau_pseudo}.")
+    except Exception:
+        await interaction.response.send_message(f"🏫 Inscription validée ! Bienvenue {nom_complet}.")
 
-@bot.command()
-async def poche(ctx):
-    argent = economie.get(ctx.author.id, 0)
-    await ctx.send(f"👛 {ctx.author.mention}, tu as **{argent}€** d'argent de poche.")
-
-@bot.command()
-async def travailler(ctx):
-    if ctx.author.id not in eleves_rp:
-        await ctx.send("❌ Tu dois d'abord t'inscrire avec `!inscription [Prénom] [Nom] [Classe]` !")
+@bot.tree.command(name="travail", description="Faire un boulot pour gagner de l'argent")
+async def travail(interaction: discord.Interaction):
+    if interaction.user.id not in eleves_rp:
+        await interaction.response.send_message("❌ Tu dois d'abord faire /inscription !")
         return
     gain = random.randint(5, 15)
-    economie[ctx.author.id] = economie.get(ctx.author.id, 0) + gain
-    jobs = [
-        "Tu as lavé les tableaux de l'aile B.",
-        "Tu as aidé la documentaliste à ranger le CDI.",
-        "Tu as ramassé les papiers dans la cour de récréation."
-    ]
-    await ctx.send(f"🧹 {random.choice(jobs)} Tu gagnes **{gain}€**.")
+    economie[interaction.user.id] = economie.get(interaction.user.id, 0) + gain
+    await interaction.response.send_message(f"🧹 Travail terminé ! Tu gagnes {gain}€.")
 
-@bot.command()
-@commands.has_permissions(manage_messages=True) 
-async def colle(ctx, membre: discord.Member, heures: int = 1):
+@bot.tree.command(name="colle", description="[Pions] Coller un élève")
+@app_commands.checks.has_permissions(manage_messages=True)
+async def colle(interaction: discord.Interaction, membre: discord.Member, heures: int):
     colles[membre.id] = colles.get(membre.id, 0) + heures
-    await ctx.send(f"🚨 **DISCIPLINE :** {membre.mention} a écopé de **{heures} heure(s) de colle** !")
+    await interaction.response.send_message(f"🚨 {membre.mention} a pris {heures}h de colle !")
 
-@bot.command()
-async def bulletin(ctx, membre: discord.Member = None):
-    cible = membre or ctx.author
+@bot.tree.command(name="bulletin", description="Voir son dossier scolaire")
+async def bulletin(interaction: discord.Interaction, membre: discord.Member = None):
+    cible = membre or interaction.user
     infos = eleves_rp.get(cible.id)
     if not infos:
-        await ctx.send(f"❌ Cet élève n'est pas encore inscrit.")
+        await interaction.response.send_message("❌ Cet élève n'est pas inscrit.")
         return
-    heures_colle = colles.get(cible.id, 0)
     argent = economie.get(cible.id, 0)
-    
-    embed = discord.Embed(title=f"📋 Dossier Scolaire - {infos['nom']}", color=0x3498db)
-    embed.add_field(name="Classe", value=infos['classe'], inline=True)
-    embed.add_field(name="Argent", value=f"{argent}€", inline=True)
-    embed.add_field(name="Heures de colle", value=f"⚠️ {heures_colle}h", inline=False)
-    await ctx.send(embed=embed)
+    colles_total = colles.get(cible.id, 0)
+    await interaction.response.send_message(f"📋 **Dossier de {infos['nom']}**\nClasse: {infos['classe']}\nArgent: {argent}€\nHeures de colle: {colles_total}h")
 
-# On lance le serveur web pour tromper Render et garder le bot en ligne
-keep_alive()
-
-# Lancement du bot via la variable d'environnement
+# Lancement
 bot.run(os.environ.get('DISCORD_TOKEN'))
